@@ -28,20 +28,9 @@ pub async fn run_server(opt: SvrOpt) -> Result<()> {
     );
     let server = Arc::new(opt.build_server());
     let opt = Arc::new(opt);
-
-    let listener = if opt.listen_addr.starts_with("unix:") {
-        // Unix socket
-        let path = opt.listen_addr.trim_start_matches("unix:").to_string();
-        let path = Path::new(&path);
-        UnixListener::bind(path)
-            .await
-            .with_context(|| format!("Failed to listen on Unix socket: {:?}", path))?
-    } else {
-        // TCP socket
-        TcpListener::bind(&opt.listen_addr)
-            .await
-            .with_context(|| format!("Failed to listen on local addr: {:?}", opt.listen_addr))?
-    };
+    let listener = TcpListener::bind(opt.listen_addr)
+        .await
+        .with_context(|| format!("Failed to listen on local addr: {:?}", opt.listen_addr))?;
 
     while let Ok((inbound, client_addr)) = listener.accept().await {
         debug!("accepting connection from {}", &client_addr);

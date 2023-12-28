@@ -24,48 +24,57 @@ use crate::utils::{extract_host_addr_from_url, url_to_relative, vec_uninit, Dura
 use super::connector::Connector;
 use super::{FIRST_PACKET_TIMEOUT, MAX_FIRST_PACKET_SIZE};
 
+pub enum Listener {
+    Tcp(TcpListener),
+    Unix(UnixListener),
+}
+
+#[async_recursion::async_recursion]
 pub async fn serve(
-    listen_addr: SocketAddr,
+    listen_addr: ListenAddr,
     connector: impl Connector + 'static + Send + Sync,
 ) -> Result<()> {
     let connector = Arc::new(connector);
 
-let listener = if listen_addr.starts_with("unix:") {
-    // Assuming Unix socket, extract the path from the address
-    let path_str = &listen_addr[5..];
-    let path = Path::new(path_str);
+    let listener = match listen_addr {
+        ListenAddr::Tcp(addr) => Listener::Tcp(TcpListener::bind(addr).await
+            .with_context(|| format!("failed to bind on {}", addr))?),
+        ListenAddr::Unix(path) => Listener::Unix(UnixListener::bind(path)
+            .with_context(|| format!("failed to bind on {:?}", path))?),
+    };
 
-    // Remove existing socket file if it exists
-    if path.exists() {
-        fs::remove_file(path).await?;
-    }
+    loop {
+        let (inbound, client_addr) = match listener {
+            Listener::Tcp(ref listener) => listener.accept().await?,
+            Listener::Unix(ref listener) => listener.accept().await?,
+        };
 
-    // Create a UnixListener
-    let listener = UnixListener::bind(path)
-        .await
-        .with_context(|| format!("failed to bind on {}", path_str))?;
-    
-    listener
-} else {
-    // Assuming TCP socket
-    TcpListener::bind(listen_addr)
-        .await
-        .with_context(|| format!("failed to bind on {}", listen_addr))?
-};
-
-
-    while let Ok((inbound, client_addr)) = listener.accept().await {
-        // TODO: handle error
         debug!("accepting connection from {}", &client_addr);
         let connector = connector.clone();
-        // convention: handle_connection only returns error in early/handshake phases
+        
         tokio::spawn(async move {
             if let Err(e) = handle_connection(inbound, client_addr, connector).await {
                 warn!(error = %format!("{:#}", e), "failed to serve {}", &client_addr)
             }
         });
     }
-    Ok(())
+}
+
+pub enum ListenAddr {
+    Tcp(SocketAddr),
+    Unix(String),
+}
+
+impl FromStr for ListenAddr {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(addr) = s.parse() {
+            Ok(ListenAddr::Tcp(addr))
+        } else {
+            Ok(ListenAddr::Unix(s.to_string()))
+        }
+    }
 }
 
 // #[instrument(skip(connector), level = "trace")]
