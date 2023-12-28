@@ -3,10 +3,11 @@ use anyhow::{anyhow, ensure, Context, Result};
 use socks5::sync::FromIO;
 use socks5_protocol as socks5;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, UnixListener, TcpStream, UdpSocket};
 use tokio::time::{timeout, Instant};
 use tracing::{debug, info, instrument, trace, warn};
-
+use std::path::Path;
+use tokio::fs;
 use std::io::{self, Cursor, Write};
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -28,9 +29,29 @@ pub async fn serve(
     connector: impl Connector + 'static + Send + Sync,
 ) -> Result<()> {
     let connector = Arc::new(connector);
-    let listener = TcpListener::bind(listen_addr)
+
+let listener = if listen_addr.starts_with("unix:") {
+    // Assuming Unix socket, extract the path from the address
+    let path_str = &listen_addr[5..];
+    let path = Path::new(path_str);
+
+    // Remove existing socket file if it exists
+    if path.exists() {
+        fs::remove_file(path).await?;
+    }
+
+    // Create a UnixListener
+    let listener = UnixListener::bind(path)
         .await
-        .with_context(|| format!("failed to bind on {}", listen_addr))?;
+        .with_context(|| format!("failed to bind on {}", path_str))?;
+    
+    listener
+} else {
+    // Assuming TCP socket
+    TcpListener::bind(listen_addr)
+        .await
+        .with_context(|| format!("failed to bind on {}", listen_addr))?
+};
 
     while let Ok((inbound, client_addr)) = listener.accept().await {
         // TODO: handle error
